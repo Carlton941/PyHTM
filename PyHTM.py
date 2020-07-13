@@ -8,6 +8,10 @@ This library implements the basic functionalities of HTM theory in object-orient
 Python 3. The following objects are defined:
     -ScalarEncoders, which encode a scalar value as an SDR using sequential bits.
     
+    -SeedEncoders, which are similar to RDSE but use seed-based RNG to avoid maintaining a list of indices.
+    
+    -RDSEncoders, which encode scalar values with non-sequential bits using a sliding window over a stored list of randomly-generated indices.
+    
     -DateEncoders, which encode a datetime object as an SDR.
     
     -MultiEncoders, which contain multiple encoders.
@@ -33,19 +37,21 @@ This is a work-in-progress, so many advanced functionalities (such as RDSE) are 
 
     
 """
+from scipy import sparse
 import pickle
 import numpy as np
 import math
 import matplotlib.pyplot as plt
 import random as rand
+import warnings
 
 class ScalarEncoder():
     #This is a simple 1D scalar value encoder.
     
-    def __init__(self, n, w, minval, maxval, periodic = False):
+    def __init__(self, n, w, minval, maxval, wrap = False):
         #Constructor method. Needs basic information about the encoding width w,
         #the encoding length n, the min and maximum allowed values, and whether 
-        #the encoding is to be periodic.
+        #the encoding should wrap-around.
         
         if w > n:
             raise ValueError('w cannot exceed n!')
@@ -57,8 +63,8 @@ class ScalarEncoder():
         self.minval = minval
         self.maxval = maxval
         self.n = n      #Total length of bit array
-        self.periodic = periodic
-        if periodic:
+        self.wrap = wrap
+        if self.wrap:
             #There are n bins.
             self.num_bins = n
         else:
@@ -84,7 +90,7 @@ class ScalarEncoder():
         arr = np.zeros((self.n,1))
 
         #If the encoder is periodic:
-        if self.periodic:
+        if self.wrap:
             #Find which bin x belongs in.
             bin_index = math.floor((x - self.minval)/self.bin_length)
             
@@ -106,6 +112,148 @@ class ScalarEncoder():
         
         return arr
     
+class SeedEncoder():
+    #Experimental version of the RDSEncoder that doesn't keep a running list of indices.
+    #Instead uses random seeds for repeatability.
+    #Note that, unlike the RDSE, this encoder has a minimum input value and cuts off anything below that.
+    #Note that this encoder does *not* check to ensure that, within each bin,
+    #no indices are duplicated. This is unlikely to be an issue if n and w are sufficiently large.
+    #If there are duplicates, no errors will be thrown--the SDR will simply be a bit more sparse.
+    
+    def __init__(self, n, w, minval = 0, res = 1):
+        #Constructor method.
+        #n->encoding length
+        #w->encoding width
+        #res->the amount of input space covered by one encoding--i.e. encoding resolution
+        self.n = n
+        self.w = w
+        self.minval = minval
+        self.res = res
+        
+    def encode(self, val, seed = 0, printout = False):
+        #Encodes a value as an SDR.
+        
+        #Cut off the input val at the minimum
+        val = max(val,self.minval)
+
+        #Set the seed.
+        rand.seed(seed)
+        
+        #Calculate how many bins to the right
+        bin_shift = int(np.floor(val - self.minval)/self.res)
+        
+        #Unless bin_shift is 0, we will need to dump a few numbers to advance the RNG state.
+        for i in range(bin_shift):
+            rand.randint(0,self.n-1)
+            bin_shift -= 1
+        
+        index_list = [rand.randint(0,self.n-1) for i in range(self.w)]
+        
+        #Generate an array with 1's in all of the index_list locations
+        out = np.zeros((self.n,1))
+        for index in index_list:
+            out[index] = 1
+            
+        #For debugging purposes:
+        if printout:
+            print("Encoding val: {}. Indices = {}".format(val,index_list))
+            
+        #Return the array
+        return out
+       
+class RDSEncoder():
+    #Random Distributed Scalar Encoder. Similar to the Scalar Encoder,
+    #but instead of sequential bits this encoder uses bits randomly distributed
+    #around the space. This greatly increases the capacity of a single encoder.
+    #This object does not support wrap-around encodings.
+    
+    def __init__(self, n, w, start = 0, res = 1):
+        #Constructor method.
+        #n->encoding length
+        #w->encoding width
+        #res->the amount of input space covered by one encoding--i.e. encoding resolution
+        self.n = n
+        self.w = w
+        self.start = start
+        self.res = res
+        self.num_bins = 1
+        self.start_index = 0 #The index in i_list corresponding to the start bin.
+        self.bin_range = [start,start+res] #The range covered by the current bins. Bins are right-exclusive: [start, start + res)
+        
+        #Initialize the index list with enough unique indices to encode the starting value
+        self.i_list = []
+        for i in range(self.w):
+            new_i = rand.randint(0,self.n-1)
+            while new_i in self.i_list:
+                new_i = rand.randint(0,self.n-1)
+            self.i_list.append(new_i)
+                
+    def encode(self,val):
+        #Encode a value in an SDR. Also handles expansion of the index-list.
+
+        #First, check to see if we've seen a value this far from start before
+        if (val >= self.bin_range[0]) and (val < self.bin_range[1]):
+            #Determine which bin this input belongs to.
+            bin_i = int(self.start_index + np.floor((val - self.start)/self.res))
+            
+        #If this value is smaller (Or more negative) than any hitherto-seen value, add more bins to the left
+        while val < self.bin_range[0]:
+            self.add_bin('left')
+            bin_i = 0
+
+        #If this value is larger than any hitherto-seen value, add more bins to the right
+        while val >= self.bin_range[1]:
+            self.add_bin('right')
+            #Account for 0-based indexing with -1
+            bin_i = self.num_bins - 1
+
+        #Go through the indices in i_list matching the appropriate bin
+        out = np.zeros((self.n,1))
+        for index in self.i_list[bin_i:bin_i + self.w]:
+            out[index] = 1
+        
+        return out
+    
+    def add_bin(self,where):
+        #Adds a new bin by extending the index list either at the end or the beginning.
+        #Ensures that, within each bin, no indices are repeated.
+        
+        #If adding to the left end of the list:
+        if where == 'left':
+            #Generate a new index that's not shared by the currently left-most bin.
+            new_i = rand.randint(0,self.n-1)
+            while new_i in self.i_list[:self.w]:
+                new_i = rand.randint(0,self.n-1)
+                
+            #Insert the new index into the left end of the index list
+            self.i_list.insert(0,new_i)
+            
+            #Update the bin range list
+            self.bin_range[0] -= self.res
+            
+            #Update the start index tracker
+            self.start_index += 1
+            
+        #Alternatively, if adding to the right end:
+        elif where == 'right':
+            #Generate a new index that's not shared by the currently right-most bin.
+            new_i = rand.randint(0,self.n-1)
+            while new_i in self.i_list[-self.w:]:
+                new_i = rand.randint(0,self.n-1)
+                
+            #Insert the new index to the right end of the list
+            self.i_list.append(new_i)
+            
+            #Update the bin range list
+            self.bin_range[1] += self.res
+            
+        #If there's an error with the 'where' arg:
+        else:
+            raise ValueError('Argument "where" must equal either "left" or "right"!')
+        
+        #Update the bin counter
+        self.num_bins += 1
+                
 class DateEncoder():
     #Encodes a date with year, month, weekday, hour and weekend data.
     #Uses a ScalarEncoder for each individual component of the encoding.
@@ -125,19 +273,19 @@ class DateEncoder():
         self.w = 0
         
         if year:
-            self.year_enc = ScalarEncoder(n = year[0], w = year[1], periodic=False)
+            self.year_enc = ScalarEncoder(n = year[0], w = year[1], wrap=False)
             self.n += year[0]
             self.w += year[1]
         if month:
-            self.month_enc = ScalarEncoder(month[0], month[1], 1, 13, periodic=True)
+            self.month_enc = ScalarEncoder(month[0], month[1], 1, 13, wrap=True)
             self.n += month[0]
             self.w += month[1]
         if day:
-            self.day_enc = ScalarEncoder(day[0], day[1], 0, 7, periodic=True)
+            self.day_enc = ScalarEncoder(day[0], day[1], 0, 7, wrap=True)
             self.n += day[0]
             self.w += day[1]
         if hour:
-            self.hour_enc = ScalarEncoder(hour[0], hour[1], 0, 24, periodic=True)
+            self.hour_enc = ScalarEncoder(hour[0], hour[1], 0, 24, wrap=True)
             self.n += hour[0]
             self.w += hour[1]
         if weekend:
@@ -166,7 +314,7 @@ class DateEncoder():
         
         return np.concatenate(arr_list)
     
-class multiEncoder():
+class MultiEncoder():
     #This object is used to conveniently combine any number of different encoder objects
     #and produces a net encoding containing the concatenated output of each encoder.
     
@@ -235,6 +383,7 @@ class miniColumn():
     def low_duty_cycle_inc(self):
         #Increments all permanence values to promote an increased duty cycle.
         self.perms = self.perms + self.perm_increment
+        self.actual_connections = self.potential_connections*(self.perms >= self.perm_thresh)
         
     def duty_cycle_update(self,activity):
         #Updates the duty cycle tracker.
@@ -248,7 +397,7 @@ class miniColumn():
 class SpatialPooler():
     #The SpatialPooler object curates a list of minicolumn, providing inputs and gathering outputs.
     
-    def __init__(self, input_dim = (1000,1), column_num = 2000, potential_percent = 0.85, active_cols = 40, stimulus_thresh = 0, perm_decrement = 0.005, perm_increment = 0.04, perm_thresh = 0.1, min_duty_cycle = 0.001, duty_cycle_period = 100, boost_str = 3):
+    def __init__(self, input_dim = (1000,1), column_num = 1000, potential_percent = 0.85, active_cols = 40, stimulus_thresh = 0, perm_decrement = 0.005, perm_increment = 0.04, perm_thresh = 0.1, min_duty_cycle = 0.001, duty_cycle_period = 100, boost_str = 3):
         #Constructor method.
         #input_dim -> Expected dimensions of the input space.
         #column_num -> Number of minicolumn to be used.
@@ -425,6 +574,9 @@ class Segment():
         #Decrements the permanences of every synapse to punish an incorrect prediction.
         self.synapse_perms -= self.incorrect_pred_dec
         
+        #Update the actual connections
+        self.actual_connections = (np.ones_like(self.synapse_perms) * (self.synapse_perms >= self.perm_thresh))
+
     def inc_perms(self, previous_active_cells):
         #Increments the permanences of every synapse according to the previous activity of the other cells
         self.synapse_perms[previous_active_cells > 0] += self.perm_increment
@@ -773,7 +925,7 @@ class TemporalMemory():
                         cells[idx] = 1
         return cells
     
-    def process_input(self, SDR, tm_learning = True, sp_learning = False, all_cells_allowed = True, num_allowed = -1):
+    def process_input(self, SDR, tm_learning = True, sp_learning = False, all_cells_allowed = True, num_allowed = -1, sparse_output = False):
         #Reads in an SDR, allows the SP to process it, determines which Cells
         #become active and predictive, then performs all of the learning updates.
         #Returns SDRs of the active and predictive cells as a tuple.
@@ -808,7 +960,10 @@ class TemporalMemory():
         #Get the new predictive cells based on the new active cells
         self.predictive_cells = self.find_predictive_cells()
         
-        return self.active_cells, self.predictive_cells
+        if sparse_output:
+            return sparse.csr_matrix(self.active_cells), sparse.csr_matrix(self.predictive_cells)
+        else:
+            return self.active_cells, self.predictive_cells
     
     def reset(self):
         #Resets all column and cell activity data.
