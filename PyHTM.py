@@ -33,7 +33,7 @@ Python 3. The following objects are defined:
         to determine cell activity and prediction as well as learning updates.   
         
         
-This is a work-in-progress, so many advanced functionalities (such as RDSE) are not implemented yet.
+This is a work-in-progress, so many advanced functionalities are not implemented yet.
 
     
 """
