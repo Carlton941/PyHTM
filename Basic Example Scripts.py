@@ -11,7 +11,7 @@ simple scalar values encoded as SDRs.
 
 -I'll show how to use the regressor object to translate from pooler SDRs into visualizable plots.
 
--Then I will show how to create and train a temporal memory based on the spatial pooler.
+-Then I will show how to create an d train a temporal memory based on the spatial pooler.
 I'll show how the regressor can be trained using the cell activity and used to translate
 the predictive cell SDRs into visualizable scalar values.
 
@@ -19,8 +19,13 @@ the predictive cell SDRs into visualizable scalar values.
 
 -The 
 """
-from PyHTM import *
+#from PyHTM import *
 import random as rand
+import numpy as np
+import math
+import matplotlib.pyplot as plt
+import random as rand
+from PyHTM import *
 
 def Basic_SP_Example():
     #This code will guide you through the process of training a spatial pooler
@@ -32,7 +37,7 @@ def Basic_SP_Example():
     plt.subplots_adjust(hspace=0.5)
 
     #First, instantiate a ScalarEncoder.
-    encoding_length = 1000  #The SDR will be 2000 bits long.
+    encoding_length = 1000  #The SDR will be 1000 bits long.
     encoding_width = 60     #Only 60 bits will be active--this is 6% sparsity.
     min_val = 0             
     max_val = 1000          #The input range will be between 0 and 1000.
@@ -45,7 +50,7 @@ def Basic_SP_Example():
     #Note that since the encoder isn't an RDSE, the on bits are all in a sequence.
     
     #Next, instantiate a SpatialPooler
-    enc_dimensions = (encoding_length,1)
+    enc_dimensions = (encoding_length,)
     col_num = 1000          #I'll arbitrarily decide to use 2000 minicolumns.
     col_active_num = 40     #The output SDRs will have 4% sparsity.
     potential_conn = 0.75   #Each minicolumn will have the potential to connect to 75% of the input space.
@@ -163,6 +168,10 @@ def Basic_TM_Example(sp,enc):
     
     return tm, at
 
+
+if __name__ == '__main__':
+    sp, enc = Basic_SP_Example()
+    tm, at = Basic_TM_Example(sp, enc)
 
 
 

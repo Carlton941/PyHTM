@@ -33,7 +33,7 @@ Python 3. The following objects are defined:
         to determine cell activity and prediction as well as learning updates.   
         
         
-This is a work-in-progress, so many advanced functionalities are not implemented yet.
+This is a work-in-progress, so many advanced functionalities (such as RDSE) are not implemented yet.
 
     
 """
@@ -87,7 +87,7 @@ class ScalarEncoder():
         x = max(self.minval,min(self.maxval, val))
         
         #Define a zeros array
-        arr = np.zeros((self.n,1))
+        arr = np.zeros((self.n,))
 
         #If the encoder is periodic:
         if self.wrap:
@@ -150,7 +150,7 @@ class SeedEncoder():
         index_list = [rand.randint(0,self.n-1) for i in range(self.w)]
         
         #Generate an array with 1's in all of the index_list locations
-        out = np.zeros((self.n,1))
+        out = np.zeros((self.n,))
         for index in index_list:
             out[index] = 1
             
@@ -208,7 +208,7 @@ class RDSEncoder():
             bin_i = self.num_bins - 1
 
         #Go through the indices in i_list matching the appropriate bin
-        out = np.zeros((self.n,1))
+        out = np.zeros((self.n,))
         for index in self.i_list[bin_i:bin_i + self.w]:
             out[index] = 1
         
@@ -337,7 +337,7 @@ class miniColumn():
     #This object maintains a list of permanences and connections.
     #The Spatial Pooler object contains a list of these miniColumn objects.
     
-    def __init__(self, input_dim = (1000,1), potential_percent = 0.5, perm_decrement = 0.008, perm_increment = 0.05, perm_thresh = 0.1, duty_cycle_period = 1000):
+    def __init__(self, input_dim = (1000,), potential_percent = 0.5, perm_decrement = 0.008, perm_increment = 0.05, perm_thresh = 0.1, duty_cycle_period = 1000):
         #Constructor method.
         #input_dim -> Expected dimensions of the input space.
         #potential_percent -> The fraction of bits in the input space to which
@@ -397,7 +397,7 @@ class miniColumn():
 class SpatialPooler():
     #The SpatialPooler object curates a list of minicolumn, providing inputs and gathering outputs.
     
-    def __init__(self, input_dim = (1000,1), column_num = 1000, potential_percent = 0.85, active_cols = 40, stimulus_thresh = 0, perm_decrement = 0.005, perm_increment = 0.04, perm_thresh = 0.1, min_duty_cycle = 0.001, duty_cycle_period = 100, boost_str = 3):
+    def __init__(self, input_dim = (1000,), column_num = 1000, potential_percent = 0.85, active_cols = 40, stimulus_thresh = 0, perm_decrement = 0.005, perm_increment = 0.04, perm_thresh = 0.1, min_duty_cycle = 0.001, duty_cycle_period = 100, boost_str = 3):
         #Constructor method.
         #input_dim -> Expected dimensions of the input space.
         #column_num -> Number of minicolumn to be used.
@@ -433,7 +433,9 @@ class SpatialPooler():
         
         ##Initialize the columns
         self.columns = [miniColumn(input_dim = input_dim, potential_percent = potential_percent, perm_decrement = perm_decrement, perm_increment = perm_increment, perm_thresh = perm_thresh, duty_cycle_period = duty_cycle_period) for i in range(column_num)]
-
+        
+        #Collect all of the column connections in a single numpy array
+        self.all_connections = np.array([col.actual_connections for col in self.columns]).reshape(self.column_num,-1)
             
     def compute_overlap(self, arr):
         #Reads in an encoded SDR, which is an array of 0s and 1s of shape input_dim that 
@@ -446,6 +448,11 @@ class SpatialPooler():
             overlap_scores[i] = self.columns[i].get_overlap_score(arr)
             
         return overlap_scores
+    
+    def compute_overlap_par(self, arr):
+        #Just like compute overlap, but uses the all_connections array.
+        #Testing to see if this is faster.
+        return np.dot(self.all_connections,arr)
         
     def update_boost_factors(self):
         #Recalculates the boost factors of each minicolumn if a duty cycle period has passed.
@@ -462,12 +469,16 @@ class SpatialPooler():
         #minicolumns may exceed the active_cols value.
         
         #Find the highest non-activated overlap score.
-        sorted_overlaps = np.sort(overlaps)
-        min_active_overlap = sorted_overlaps[-self.active_cols]
+        #sorted_overlaps = np.sort(overlaps)
+        #min_active_overlap = sorted_overlaps[-self.active_cols]
         
         #Assign an activation score of 1 to all minicolumn with larger overlaps.
+        #active_columns = np.zeros((self.column_num,))
+        #active_columns[(overlaps >= self.stimulus_thresh) & (overlaps >= min_active_overlap)] = 1
+        
+        #Argpartition version:
         active_columns = np.zeros((self.column_num,))
-        active_columns[(overlaps >= self.stimulus_thresh) & (overlaps >= min_active_overlap)] = 1
+        active_columns[np.argpartition(overlaps,-self.active_cols)[-self.active_cols:]] = 1
         
         #Plot the active columns if so desired
         if plot:
@@ -481,14 +492,18 @@ class SpatialPooler():
             self.columns[i].duty_cycle_update(active_columns[i])
             if active_columns[i] > 0:
                 self.columns[i].update_perms(arr)
-
+                #Update the all_connections array
+                self.all_connections[i,:] = self.columns[i].actual_connections
+        
     def low_duty_cycle_inc(self):
         #Calls low_duty_cycle_inc() for each column with a duty cycle below the
         #minimum to encourage more activity.
         for i in range(self.column_num):
             if self.columns[i].get_duty_cycle()/self.duty_cycle_period <= self.min_duty_cycle:
                 self.columns[i].low_duty_cycle_inc()
-
+                #Update the all_connections array
+                self.all_connections[i,:] = self.columns[i].actual_connections
+        
     def process_input(self, arr, boosting = True):
         #Takes an encoded input SDR and goes through all of the steps needed to
         #process it, I.E. determining which minicolumns become active and performing
@@ -498,7 +513,8 @@ class SpatialPooler():
         self.input_cycles += 1     
         
         #Get the minicolumn overlap scores.
-        pre_overlap_scores = self.compute_overlap(arr)
+        #pre_overlap_scores = self.compute_overlap(arr)
+        pre_overlap_scores = self.compute_overlap_par(arr)
         
         #Boost the overlap scores if boosting is being used.
         post_overlap_scores = pre_overlap_scores
@@ -561,7 +577,7 @@ class Segment():
         
         #Initialize the synapse permanences with the last_active_cells argument
         self.synapse_perms = initial_perm * last_active_cells
-        self.actual_connections = (np.ones_like(self.synapse_perms) * (self.synapse_perms >= self.perm_thresh))
+        self.actual_connections = (self.synapse_perms >= self.perm_thresh)
         
         #Check to make sure the initial connection number does not exceed self.max_synapse_per_segment
         total = np.sum(self.actual_connections)
@@ -575,7 +591,7 @@ class Segment():
         self.synapse_perms -= self.incorrect_pred_dec
         
         #Update the actual connections
-        self.actual_connections = (np.ones_like(self.synapse_perms) * (self.synapse_perms >= self.perm_thresh))
+        self.actual_connections = (self.synapse_perms >= self.perm_thresh)
 
     def inc_perms(self, previous_active_cells):
         #Increments the permanences of every synapse according to the previous activity of the other cells
@@ -583,11 +599,11 @@ class Segment():
         self.synapse_perms[previous_active_cells < 1] -= self.perm_decrement
         
         #Record the updated connections list, including both new and old synapses
-        new_connections_list = np.ones_like(self.synapse_perms) * (self.synapse_perms >= self.perm_thresh)
+        new_connections_list = (self.synapse_perms >= self.perm_thresh)
         
         ##Check to ensure that no more than max_new_synapse have been added by this update
         #Calculate the total number of added connections
-        diff_arr = np.ones_like(new_connections_list)*(new_connections_list > 0)*(self.actual_connections < 1)
+        diff_arr = (new_connections_list > 0)*(self.actual_connections < 1)
         diff = int(np.sum(diff_arr)) - self.max_new_synapse
         
         #If the number of added connections exceeds self.max_new_synapse, delete the necessary number of them
@@ -643,7 +659,7 @@ class Cell():
         
         #Initialize the segments and connections list
         self.segments = []
-        self.connections_list = []
+        self.all_connections = []
     
         #Initialize the variables that record the index and overlap strength
         #of the most overlapping segment at each step, used for later learning.
@@ -656,6 +672,10 @@ class Cell():
             self.segments.append(Segment(last_active_cells = active_cells, perm_thresh = self.perm_thresh, max_synapse_per_segment = self.max_synapse_per_segment, perm_increment = self.perm_increment, perm_decrement = self.perm_decrement, incorrect_pred_dec = self.incorrect_pred_dec, initial_perm = self.initial_perm, max_new_synapse = self.max_new_synapse))
             #Record the index of the newest segment for learning in the next stage
             self.predictive_segment = len(self.segments) - 1
+            
+            #Update the all_connections array
+            self.all_connections = np.array([segment.actual_connections for segment in self.segments]).reshape((len(self.segments),-1))
+            
         else:
             #raise ValueError('Cell already has the maximum number of segments!')
             self.TooManySegmentsErrorCount += 1
@@ -680,6 +700,17 @@ class Cell():
         self.predictive_segment = max_index
         self.predictive_overlap = max_val
         return max_val
+    
+    def get_max_overlap_score_par(self,active_cells):
+        #Just like get_max_overlap_score, but uses the all_connections array.
+        #Should be faster.
+        if len(self.segments) == 0:
+            return -1
+        
+        scores = np.dot(self.all_connections,active_cells)
+        self.predictive_segment = np.argmax(scores)
+        self.predictive_overlap = scores[self.predictive_segment]
+        return self.predictive_overlap
     
     def update_perms(self, previous_active_cells = 0,correct_prediction = False):
         #Updates the permanences of the synapses in a given segment of this cell according to the given activity.
@@ -823,20 +854,20 @@ class TemporalMemory():
         self.incorrect_pred_dec = incorrect_pred_dec
         self.max_segments = max_segments
         self.max_synapse_per_segment = max_synapse_per_segment
-        self.active_cols = np.zeros((self.column_num,1))
+        self.active_cols = np.zeros((self.column_num,))
         self.subthreshold_learning = subthreshold_learning
         
         #Create a list of cells that is num_cells*column_num long.
         self.cells = [Cell(own_index = i, max_synapse_per_segment = self.max_synapse_per_segment, perm_increment = self.perm_increment, perm_decrement = self.perm_decrement, incorrect_pred_dec = self.incorrect_pred_dec, initial_perm = self.initial_perm, perm_thresh = self.perm_thresh, min_learning_thresh = self.min_learning_thresh, max_new_synapse = self.max_new_synapse) for i in range(num_cells*self.column_num)]
         
         #Initialize a tracker for last time's active cells
-        self.last_active_cells = np.zeros((num_cells*self.column_num,1))
+        self.last_active_cells = np.zeros((num_cells*self.column_num,))
         
         #Initialize a tracker for the currently active cells
         self.active_cells = self.last_active_cells
         
         #Initialize a tracker for the predictive cells
-        self.predictive_cells = np.zeros((num_cells*self.column_num,1))
+        self.predictive_cells = np.zeros((num_cells*self.column_num,))
     
         #Record the spatial pooler
         self.spatial_pooler = spatial_pooler
@@ -854,7 +885,7 @@ class TemporalMemory():
         #Note: I tried using array assignments to instantly assign all of the predictive cells in active columns
         #to active cells, but it was actually about 20% slower than the explicit for-loop code below. I don't know why, and it wasn't because of 
         #the weirdness of rank 1 numpy arrays.
-        cells = np.zeros((self.num_cells*self.column_num,1))        
+        cells = np.zeros((self.num_cells*self.column_num,))        
         for col_index, col_bit in enumerate(active_columns):
             #For each active column:
                 if col_bit:
@@ -907,12 +938,12 @@ class TemporalMemory():
                 #Check each cell corresponding to this column and, if it exceeds the stimulus threshold,
                 #record it in the 'cells' variable.
                 for cell in self.cells[self.num_cells*(i):self.num_cells*(i+1)]:
-                    if cell.get_max_overlap_score(self.active_cells) >= self.stimulus_thresh:
+                    if cell.get_max_overlap_score_par(self.active_cells) >= self.stimulus_thresh:
                         cells[cell.own_index] = 1
              
             else:
                 #Get a list of tuples containing the cell and the cell's max overlap score.
-                max_overlaps = [(cell, cell.get_max_overlap_score(self.active_cells)) for cell in self.cells[self.num_cells*(i):self.num_cells*(i+1)]]
+                max_overlaps = [(cell, cell.get_max_overlap_score_par(self.active_cells)) for cell in self.cells[self.num_cells*(i):self.num_cells*(i+1)]]
                 #Sort the tuples by overlap score
                 max_overlaps.sort(reverse=True, key=(lambda x: x[1]))
                 for j in range(num_predictive_allowed):
