@@ -19,7 +19,6 @@ the predictive cell SDRs into visualizable scalar values.
 
 -The 
 """
-#from PyHTM import *
 import random as rand
 import numpy as np
 import math
@@ -57,7 +56,8 @@ def Basic_SP_Example():
     perm_inc = 0.5          #Permanence learning increment size.
     perm_dec = 0.008        #Choose a much smaller decrement rate in this case.
     #Go with the default for the other options.
-    sp = SpatialPooler(input_dim=enc_dimensions, active_cols=col_active_num,
+    sp = SpatialPooler(input_dim=enc_dimensions, column_num = col_num,
+                       max_active_cols=col_active_num,
                        potential_percent=potential_conn,
                        perm_increment=perm_inc,
                        perm_decrement=perm_dec)
@@ -70,12 +70,13 @@ def Basic_SP_Example():
     #To train the spatial pooler, I need to randomly generate many input values and encode them.
     random_vals = [max_val*rand.random() for i in range(2000)]
     random_val_encodings = [enc.encode(val) for val in random_vals]
+    sp_random_outputs = []
     
     #Now I can train the spatial pooler to recognize and represent inputs in the range [0,1000)
     for index, encoding in enumerate(random_val_encodings):
         if index % 100 == 0:
             print("Processed {} out of 2000 inputs...".format(index))
-        sp.process_input(encoding)
+        sp_random_outputs.append(sp.process_input(encoding))
         
     #Now that the minicolumns have been trained, let's take another look at the connections.
     #Not all of the columns have been particularly active, so for this demonstration we'll
@@ -94,12 +95,12 @@ def Basic_SP_Example():
     #First generate a simple sine signal and encode it
     t = np.arange(0,2*np.pi, 2*np.pi/50)
     x = 500 + 500*np.sin(t)
-    enc_x = [enc.encode(val) for val in x]
+    sp_x = [sp.process_input(enc.encode(val)) for val in x]
     
     #Instantiate the regressor. It will automatically learn the data. 
     #The default regressor type is sklearn's KNeighborsRegressor.
-    reg = Regressor(enc_x,x)
-    translations = reg.translate(enc_x)
+    reg = Regressor(sp_random_outputs,random_vals)
+    translations = reg.translate(sp_x)
     
     #Now let's plot the original and the translation together.
     ax4.plot(x,c='red',label='Original')
@@ -120,7 +121,7 @@ def Basic_TM_Example(sp,enc):
     num_cells = 4   #We'll just use a few cells for this.
     threshold = 4   #The predictive overlap threshold
     at = AnomalyTracker()   #Initialize a default anomaly tracker
-    #Leave the other parameters to default
+    #Leave the other parameters as their default settings
     tm = TemporalMemory(spatial_pooler = sp, anomaly_tracker=at, num_cells=num_cells, stimulus_thresh = threshold)
     
     #Let's train it on a sine wave again, but we'll add some anomalies this time.

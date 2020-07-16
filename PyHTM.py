@@ -337,7 +337,7 @@ class miniColumn():
     #This object maintains a list of permanences and connections.
     #The Spatial Pooler object contains a list of these miniColumn objects.
     
-    def __init__(self, input_dim = (1000,), potential_percent = 0.5, perm_decrement = 0.008, perm_increment = 0.05, perm_thresh = 0.1, duty_cycle_period = 1000):
+    def __init__(self, input_dim = (1000,), potential_percent = 0.5, perm_decrement = 0.008, perm_increment = 0.05, perm_thresh = 0.1, duty_cycle_period = 1000, apical_input_dim = None):
         #Constructor method.
         #input_dim -> Expected dimensions of the input space.
         #potential_percent -> The fraction of bits in the input space to which
@@ -354,6 +354,7 @@ class miniColumn():
         self.perm_increment = perm_increment
         self.perm_thresh = perm_thresh
         self.duty_cycle_period = duty_cycle_period
+        self.apical_input_dim = apical_input_dim
         
         #Initialize the column connections.
         #The potential connections will be stored in an array of size input_dim with 1's to indicate possible connections.
@@ -363,27 +364,45 @@ class miniColumn():
         self.perms = np.random.normal(loc=perm_thresh, scale=perm_increment, size=input_dim)*self.potential_connections
         
         #The actual connections will be stored in an array like potential_connections
-        self.actual_connections = self.potential_connections*(self.perms >= perm_thresh)
+        self.actual_connections = (self.perms >= perm_thresh)
+        
+        #If apical inputs exist, add similar arrays to account for them as well
+        if apical_input_dim is not None:
+            self.potential_apical_connections = np.random.choice([1,0], size=apical_input_dim, p = [potential_percent, 1-potential_percent])
+            self.apical_perms = np.random.normal(loc=perm_thresh, scale=perm_increment, size=apical_input_dim)*self.potential_apical_connections
+            self.actual_apical_connections = (self.apical_perms >= perm_thresh)
         
         #Initialize the duty cycle tracker
         self.duty_tracker = [0]*int(duty_cycle_period)
         
-    def get_overlap_score(self, arr):
+    def get_overlap_score(self, arr, apical = False):
         #Returns the overlap score between the actual connections and an array of active synapses.
-        return np.sum(arr*self.actual_connections)
+        if not apical:
+            return np.sum(arr*self.actual_connections)
+        else:
+            return np.sum(arr*self.actual_apical_connections)
     
-    def update_perms(self, arr):
+    def update_perms(self, arr, apical = False):
         #Increments the permanence values for active synapses.
         #Decrements the permanence values for inactive synapses.
         #Updates the actual_connections array.
-        self.perms[arr > 0] = self.perms[arr > 0] + self.perm_increment
-        self.perms[arr < 1] = self.perms[arr < 1] - self.perm_decrement
-        self.actual_connections = self.potential_connections*(self.perms >= self.perm_thresh)
+        if not apical:
+            self.perms[(arr > 0)] += self.perm_increment
+            self.perms[(arr < 1)] -= self.perm_decrement
+            self.actual_connections = self.potential_connections*(self.perms >= self.perm_thresh)
+        else:
+            self.apical_perms[(arr > 0)] += self.perm_increment
+            self.apical_perms[(arr < 1)] -= self.perm_decrement
+            self.actual_apical_connections = self.potential_apical_connections*(self.apical_perms >= self.perm_thresh)
     
-    def low_duty_cycle_inc(self):
+    def low_duty_cycle_inc(self, apical = False):
         #Increments all permanence values to promote an increased duty cycle.
-        self.perms = self.perms + self.perm_increment
-        self.actual_connections = self.potential_connections*(self.perms >= self.perm_thresh)
+        if not apical:
+            self.perms += self.perm_increment
+            self.actual_connections = self.potential_connections*(self.perms >= self.perm_thresh)
+        else:
+            self.apical_perms += self.perm_increment
+            self.actual_apical_connections = self.potential_apical_connections*(self.apical_perms >= self.perm_thresh)
         
     def duty_cycle_update(self,activity):
         #Updates the duty cycle tracker.
@@ -396,14 +415,16 @@ class miniColumn():
     
 class SpatialPooler():
     #The SpatialPooler object curates a list of minicolumn, providing inputs and gathering outputs.
+    #The pooler can maintain connections to external proximal inputs as well as apical connections to
+    #the minicolumns of another pooler. In this case, 
     
-    def __init__(self, input_dim = (1000,), column_num = 1000, potential_percent = 0.85, active_cols = 40, stimulus_thresh = 0, perm_decrement = 0.005, perm_increment = 0.04, perm_thresh = 0.1, min_duty_cycle = 0.001, duty_cycle_period = 100, boost_str = 3):
+    def __init__(self, input_dim = (1000,), column_num = 1000, potential_percent = 0.85, max_active_cols = 40, stimulus_thresh = 0, perm_decrement = 0.005, perm_increment = 0.04, perm_thresh = 0.1, min_duty_cycle = 0.001, duty_cycle_period = 100, boost_str = 3, apical_input_dim = None, apical_stim_thresh = 10):
         #Constructor method.
         #input_dim -> Expected dimensions of the input space.
         #column_num -> Number of minicolumn to be used.
         #potential_percent -> The fraction of bits in the input space to which
         #this miniColumn *may* grow connections.
-        #active_cols -> Number of allowed active minicolumn in each cycle.
+        #max_active_cols -> Number of allowed minicolumn activations per input processed
         #stimulus_thresh -> Threshold of overlap for a minicolumn to be eligible for action.
         #perm_decrement -> Amount by which the permanence to an inactive bit will decrease.
         #perm_increment -> Amount by which the permanence to an active bit will increase.
@@ -411,12 +432,14 @@ class SpatialPooler():
         #min_duty_cycle -> A minicolumn with duty cycle below this value will be encouraged to be more active.
         #duty_cycle_period -> Number of recent inputs used to compute the duty cycle.
         #boost_str -> Strength of the boosting effect used to enhance the overlap score of low-duty-cycle minicolumn.
+        #apical_input_dim -> shape of apical inputs from a neighboring SP. Default of None indicates no inputs.
+        #apical_stim_thresh -> Stimulus threshold to activate a minicolumn based on apical connections, or possibly a combination of apical and proximal.
         
         #Record the numeric parameters
         self.input_dim = input_dim
         self.column_num = column_num
         self.potential_percent = potential_percent
-        self.active_cols = active_cols
+        self.max_active_cols = max_active_cols
         self.stimulus_thresh = stimulus_thresh
         self.perm_decrement = perm_decrement
         self.perm_increment = perm_increment
@@ -424,6 +447,11 @@ class SpatialPooler():
         self.min_duty_cycle = min_duty_cycle
         self.duty_cycle_period = duty_cycle_period
         self.boost_str = boost_str
+        self.apical_input_dim = apical_input_dim
+        self.apical_stim_thresh = apical_stim_thresh
+        
+        #Initialize column activity tracker
+        self.active_cols = np.zeros((column_num,))
         
         #Track the boost factors
         self.boost_factors = np.ones((column_num,))
@@ -432,12 +460,17 @@ class SpatialPooler():
         self.input_cycles = 0
         
         ##Initialize the columns
-        self.columns = [miniColumn(input_dim = input_dim, potential_percent = potential_percent, perm_decrement = perm_decrement, perm_increment = perm_increment, perm_thresh = perm_thresh, duty_cycle_period = duty_cycle_period) for i in range(column_num)]
+        self.columns = [miniColumn(input_dim = input_dim, potential_percent = potential_percent, perm_decrement = perm_decrement, perm_increment = perm_increment, perm_thresh = perm_thresh, duty_cycle_period = duty_cycle_period, apical_input_dim = apical_input_dim) for i in range(column_num)]
         
         #Collect all of the column connections in a single numpy array
         self.all_connections = np.array([col.actual_connections for col in self.columns]).reshape(self.column_num,-1)
-            
-    def compute_overlap(self, arr):
+
+        #If apical connections exist, make all of these same arrays for apical inputs
+        if self.apical_input_dim:
+            self.apical_boost_factors = np.ones(self.apical_input_dim)
+            self.all_apical_connections = np.array([col.actual_apical_connections for col in self.columns]).reshape(self.column_num,-1)
+
+    def compute_overlap(self, arr, apical = False):
         #Reads in an encoded SDR, which is an array of 0s and 1s of shape input_dim that 
         #indicate inactive/active input bits respectively. Returns an output of shape 
         #(column_num,1) containing the overlap score of each minicolumn.
@@ -445,76 +478,120 @@ class SpatialPooler():
         #Get the raw overlap scores of each minicolumn.
         overlap_scores = np.zeros((self.column_num,))
         for i in range(self.column_num):
-            overlap_scores[i] = self.columns[i].get_overlap_score(arr)
+            overlap_scores[i] = self.columns[i].get_overlap_score(arr, apical)
             
         return overlap_scores
     
-    def compute_overlap_par(self, arr):
+    def compute_overlap_par(self, arr, apical = False):
         #Just like compute overlap, but uses the all_connections array.
         #Testing to see if this is faster.
-        return np.dot(self.all_connections,arr)
+        try:
+            if not apical:
+                return np.dot(self.all_connections,arr)
+            else:
+                return np.dot(self.all_apical_connections,arr)
+        except ValueError:
+            print("Exception! apical is {}".format(apical))
         
     def update_boost_factors(self):
         #Recalculates the boost factors of each minicolumn if a duty cycle period has passed.
         if self.input_cycles >= self.duty_cycle_period:
             #Update the boost factors
             for i in range(self.column_num):
-                self.boost_factors[i] = np.exp(-self.boost_str*(self.columns[i].get_duty_cycle()/self.duty_cycle_period - self.active_cols/self.column_num))
+                self.boost_factors[i] = np.exp(-self.boost_str*(self.columns[i].get_duty_cycle()/self.duty_cycle_period - self.max_active_cols/self.column_num))
     
-    def get_active_columns(self, overlaps, plot = False):
+    def get_active_columns(self, overlaps, apical = False, reset = False):
         #Takes a set of overlap scores of shape (column_num, 1) and returns a 
         #binary array indicating inactive/active minicolumns.
         #Can be given either pre- or post-boost overlap scores.
         #Note that if many minicolumn share an overlap score, the number of active
         #minicolumns may exceed the active_cols value.
+
+        #Reset the active cols to start, if this is a proximal input process
+        if (not apical) or (reset):
+            self.active_cols = np.zeros(self.active_cols.shape)
+        self.active_cols[np.argpartition(overlaps,-self.max_active_cols)[-self.max_active_cols:]] = 1
         
         #Find the highest non-activated overlap score.
-        #sorted_overlaps = np.sort(overlaps)
-        #min_active_overlap = sorted_overlaps[-self.active_cols]
+        # active_overlap_list = find_N_highest(overlaps, int(self.max_active_cols))
+        # active_overlap_index = int(self.max_active_cols) - 1
+        # min_active_overlap = active_overlap_list[active_overlap_index]
         
-        #Assign an activation score of 1 to all minicolumn with larger overlaps.
-        #active_columns = np.zeros((self.column_num,))
-        #active_columns[(overlaps >= self.stimulus_thresh) & (overlaps >= min_active_overlap)] = 1
-        
-        #Argpartition version:
-        active_columns = np.zeros((self.column_num,))
-        active_columns[np.argpartition(overlaps,-self.active_cols)[-self.active_cols:]] = 1
-        
-        #Plot the active columns if so desired
-        if plot:
-            plot_SDR(active_columns)
+        # #Assign an activation score of 1 to all minicolumn with large enough overlap scores.
+        # if not apical:
+        #     self.active_cols = np.zeros(self.active_cols.shape)
+        #     self.active_cols[(overlaps >= self.stimulus_thresh) & (overlaps >= min_active_overlap)] = 1
+        # else:
+        #     self.active_cols[(overlaps >= self.apical_stim_thresh) & (overlaps >= min_active_overlap)] = 1
             
-        return active_columns
+        # # This while loop will ensure that, in the case of ties, there are still not too many active columns.        
+        # # We'll be lenient and add a 20% buffer.
+        # while (np.sum(self.active_cols) > self.max_active_cols*1.2) and (active_overlap_index > 0):
+        #     # Decrement the active overlap index once each loop. In other words:
+        #     # If last loop looked at the Nth highest, this time we'll look at the 
+        #     # N-1th highest, and so on until the 1st highest overlap score.
+        #     active_overlap_index -= 1
+        #     min_active_overlap = active_overlap_list[active_overlap_index]
+        #     if active_overlap_index == 0:
+        #         print(np.sum(self.active_cols))
+            
+        #     # Repeat the above process of activation assignment based on overlap score
+        #     if not apical:
+        #         self.active_cols = np.zeros(self.active_cols.shape)
+        #         self.active_cols[(overlaps >= self.stimulus_thresh) & (overlaps >= min_active_overlap)] = 1
+        #     else:
+        #         self.active_cols[(overlaps >= self.apical_stim_thresh) & (overlaps >= min_active_overlap)] = 1
+            
+        return self.active_cols
     
-    def duty_cycle_and_permanence_update(self, active_columns, arr):
-        #Update the duty cycle tracker and permanences of active minicolumns.
+    def duty_cycle_update(self, apical = False):
+        #Updates the duty cycle data of every column.
         for i in range(self.column_num):
-            self.columns[i].duty_cycle_update(active_columns[i])
-            if active_columns[i] > 0:
-                self.columns[i].update_perms(arr)
+            self.columns[i].duty_cycle_update(self.active_cols[i])
+            
+    def permanence_update(self, arr, apical=False):
+        #Update the permanence of active minicolumns.
+        #Can be used for either proximal or apical connections.
+        for i in range(self.column_num):
+            if self.active_cols[i] > 0:
+                #Update the permanences of active columns
+                self.columns[i].update_perms(arr,apical)
+                
                 #Update the all_connections array
-                self.all_connections[i,:] = self.columns[i].actual_connections
+                if not apical:
+                    self.all_connections[i,:] = self.columns[i].actual_connections
+                else:
+                    self.all_apical_connections[i,:] = self.columns[i].actual_apical_connections
         
     def low_duty_cycle_inc(self):
         #Calls low_duty_cycle_inc() for each column with a duty cycle below the
         #minimum to encourage more activity.
         for i in range(self.column_num):
             if self.columns[i].get_duty_cycle()/self.duty_cycle_period <= self.min_duty_cycle:
-                self.columns[i].low_duty_cycle_inc()
+                #Update the permanences
+                self.columns[i].low_duty_cycle_inc(apical=False)
                 #Update the all_connections array
                 self.all_connections[i,:] = self.columns[i].actual_connections
+                
+                #If apical connections exist, update them too.
+                if self.apical_input_dim is not None:
+                    self.columns[i].low_duty_cycle_inc(apical=True)
+                    self.all_apical_connections[i,:] = self.columns[i].actual_apical_connections
         
-    def process_input(self, arr, boosting = True):
+    def process_input(self, arr, boosting = True, apical = False, update_duty_cycle = True, sp_learning = True, reset = False):
         #Takes an encoded input SDR and goes through all of the steps needed to
         #process it, I.E. determining which minicolumns become active and performing
         #the learning updates. Returns an SDR of active minicolumns.
-        
+
         #Increment the input counter. This is for duty cycle tracking purposes.
-        self.input_cycles += 1     
+        #Since there may be multiple inputs to process per single cycle,
+        #check the boolean update value first so that we do not update
+        #more than once per cycle.
+        if update_duty_cycle:
+            self.input_cycles += 1     
         
         #Get the minicolumn overlap scores.
-        #pre_overlap_scores = self.compute_overlap(arr)
-        pre_overlap_scores = self.compute_overlap_par(arr)
+        pre_overlap_scores = self.compute_overlap_par(arr, apical)
         
         #Boost the overlap scores if boosting is being used.
         post_overlap_scores = pre_overlap_scores
@@ -523,21 +600,26 @@ class SpatialPooler():
             post_overlap_scores = pre_overlap_scores*self.boost_factors
             
         #Determine the active minicolumns based on the net overlap scores
-        active_columns = self.get_active_columns(post_overlap_scores)
+        self.get_active_columns(post_overlap_scores, apical, reset);
         
-        #Update the duty cycle tracker and minicolumn permanences
-        self.duty_cycle_and_permanence_update(active_columns, arr)
+        #Update the duty cycle tracker for each minicolumn
+        if update_duty_cycle:
+            self.duty_cycle_update()
+            
+        #Update the permanences for each minicolumn, both proximal and apical
+        if sp_learning:
+            self.permanence_update(arr,apical)
         
        #Periodically increment the permanences of minicolumns with low duty cycles to promote more activity.
-        if self.input_cycles % self.duty_cycle_period == 0:
+        if (self.input_cycles % self.duty_cycle_period == 0) and update_duty_cycle:
             self.low_duty_cycle_inc()
             
         #Return an SDR of the active columns.
-        return active_columns
+        return self.active_cols
     
-    def save_SP(self, path = '', name = 'Spatial_Pooler'):
+    def save_SP(self, path = '', name = 'Spatial_Pooler', string = ''):
         #Saves a copy of the SP to a file.
-        filename = path + name + ".txt"
+        filename = path + name + string + ".txt"
         with open(filename, 'wb') as f:
             pickle.dump(self, f)
         
@@ -761,6 +843,10 @@ class AnomalyTracker():
         #anomaly scores, using a sliding window of max_window size.
         #If the anomaly score is less than the mean, the likelihood is assumed to be zero.
         #Otherwise, the likelihood is 1 - (odds of getting that score, assuming normally distributed scores)
+        if self.dev == 0:
+            self.likelihoods.append(0)
+            return
+        
         if self.scores[-1] < self.mean:
             val = 0
         else:
@@ -857,6 +943,9 @@ class TemporalMemory():
         self.active_cols = np.zeros((self.column_num,))
         self.subthreshold_learning = subthreshold_learning
         
+        if subthreshold_learning:
+            self.subthreshold_cells = np.zeros((self.num_cells*self.column_num,))
+        
         #Create a list of cells that is num_cells*column_num long.
         self.cells = [Cell(own_index = i, max_synapse_per_segment = self.max_synapse_per_segment, perm_increment = self.perm_increment, perm_decrement = self.perm_decrement, incorrect_pred_dec = self.incorrect_pred_dec, initial_perm = self.initial_perm, perm_thresh = self.perm_thresh, min_learning_thresh = self.min_learning_thresh, max_new_synapse = self.max_new_synapse) for i in range(num_cells*self.column_num)]
         
@@ -878,15 +967,17 @@ class TemporalMemory():
     def get_active_columns(self, SDR):
         #Takes an SDR input and calls the spatial pooler to determine which columns become active.
         #This method does not let the SP use boosting or make learning updates.
-        return self.spatial_pooler.get_active_columns(self.spatial_pooler.compute_overlap(SDR))
+        return self.spatial_pooler.get_active_columns(self.spatial_pooler.compute_overlap_par(SDR))
 
-    def find_active_cells(self, active_columns, learning = False):
+    def find_active_cells(self, learning = False):
         #Takes in a list of active columns and updates the active cells.
         #Note: I tried using array assignments to instantly assign all of the predictive cells in active columns
         #to active cells, but it was actually about 20% slower than the explicit for-loop code below. I don't know why, and it wasn't because of 
         #the weirdness of rank 1 numpy arrays.
-        cells = np.zeros((self.num_cells*self.column_num,))        
-        for col_index, col_bit in enumerate(active_columns):
+        
+        #Reset the active cell array
+        self.active_cells = np.zeros(self.active_cells.shape) 
+        for col_index, col_bit in enumerate(self.active_cols):
             #For each active column:
                 if col_bit:
                     #For each corresponding cell:
@@ -895,14 +986,14 @@ class TemporalMemory():
                             if self.predictive_cells[cell_index]:
                                 #If any of the cells is predictive, make it active.
                                 #If multiple cells are predictive, they all become active.
-                                cells[cell_index] = 1
+                                self.active_cells[cell_index] = 1
                                 predictive_exists = True
                             
                         #If none of the cells in this column were predictive, burst the column
                         #This means select one of the cells randomly and make it active.
                         if (not predictive_exists):
                             cell_index = rand.randint((col_index)*self.num_cells, (col_index+1)*self.num_cells - 1)
-                            cells[cell_index] = 1
+                            self.active_cells[cell_index] = 1
                             
                             #In case this cell will not grow a new segment, indicate no predictions
                             self.cells[cell_index].predictive_segment = -1
@@ -914,20 +1005,29 @@ class TemporalMemory():
                                 self.cells[cell_index].add_segment(self.last_active_cells)
                                 #The new segment takes in the list of previously active cells and forms synapses to them.
                                 
-        return cells
+        return self.active_cells
 
     def find_predictive_cells(self, all_cells_allowed = True, num_allowed = -1):
         #Calculates which cells become predictive now based on current cell activity.
         #The all_cells_allowed variable determines if each column can be represented by
         #all of its cells, or some preset number of them. Setting all_cells_allowed to True
         #is highly recommended if speed is an issue.
+        #This method also checks which cells don't quite meet the prediction threshold but
+        #are still eligible to learn. These cells will be updated during this cycle, although
+        #they wouldn't have become active until *next* cycle if they were predictive.
+        #This doesn't introduce an error in the algorithm since the cell activity
+        #method doesn't actually check overlap scores, but rather predictive state.
         if all_cells_allowed:
             num_predictive_allowed = self.num_cells
         else:
             num_predictive_allowed = num_allowed
             
-        #Check which cells become predictive based on the currently active cells.
-        cells = np.zeros_like(self.predictive_cells)
+        #Reset the predictive cell array and learning array
+        self.predictive_cells  = np.zeros(self.predictive_cells.shape)
+        
+        if self.subthreshold_learning:
+            self.subthreshold_cells = np.zeros(self.subthreshold_cells.shape)
+
         #Loop over each column index to check if any of its cells become predictive
         for i in range(self.column_num):
             
@@ -938,14 +1038,30 @@ class TemporalMemory():
                 #Check each cell corresponding to this column and, if it exceeds the stimulus threshold,
                 #record it in the 'cells' variable.
                 for cell in self.cells[self.num_cells*(i):self.num_cells*(i+1)]:
-                    if cell.get_max_overlap_score_par(self.active_cells) >= self.stimulus_thresh:
-                        cells[cell.own_index] = 1
-             
+                    
+                    #Get the overlap score
+                    score = cell.get_max_overlap_score_par(self.active_cells)
+                    
+                    #Check it against the stimulus threshold and learning threshold
+                    if score >= self.stimulus_thresh:
+                        self.predictive_cells[cell.own_index] = 1
+                    elif self.subthreshold_learning and (score >= self.min_learning_thresh):
+                        self.subthreshold_cells[cell.own_index] = 1
+                        
+            #If only a certain number of cells are allowed to activate per column:
             else:
                 #Get a list of tuples containing the cell and the cell's max overlap score.
                 max_overlaps = [(cell, cell.get_max_overlap_score_par(self.active_cells)) for cell in self.cells[self.num_cells*(i):self.num_cells*(i+1)]]
+                
+                #Record the subthreshold learning cells:
+                if self.subthreshold_learning:
+                    for pair in max_overlaps:
+                        if pair[1] >= self.min_learning_thresh and pair[1] < self.stimulus_thresh:
+                            self.subthreshold_cells[pair[0].own_index] = 1
+                    
                 #Sort the tuples by overlap score
                 max_overlaps.sort(reverse=True, key=(lambda x: x[1]))
+                
                 for j in range(num_predictive_allowed):
                 #Check the top few (number specified by num_predictive_allowed) and make them predictive
                 #if their overlaps exceed the threshold.
@@ -953,8 +1069,9 @@ class TemporalMemory():
                         #If the biggest few overlap scores among the cells exceeds the stimulus threshold,
                         #make those cells predictive. Otherwise none of them will be. 
                         idx = max_overlaps[j][0].own_index
-                        cells[idx] = 1
-        return cells
+                        self.predictive_cells[idx] = 1
+                
+        return self.predictive_cells
     
     def process_input(self, SDR, tm_learning = True, sp_learning = False, all_cells_allowed = True, num_allowed = -1, sparse_output = False):
         #Reads in an SDR, allows the SP to process it, determines which Cells
@@ -969,7 +1086,7 @@ class TemporalMemory():
         self.last_active_cells = self.active_cells
         
         #Get the new active cells based on the active columns and currently predictive cells
-        self.active_cells = self.find_active_cells(self.active_cols, tm_learning)
+        self.find_active_cells(tm_learning);
         
         #If this TM has an anomaly tracker, update its scores
         #This needs to be done after the new active cells are computed but before the old predictive cells
@@ -980,16 +1097,25 @@ class TemporalMemory():
         #Update the permanences of the active cells' highest-overlap segments.
         if tm_learning:
             for i in range(self.num_cells*self.column_num):
-                #If the cell is active, increment its permanences
-                if self.active_cells[i] > 0:
+                #If the cell is active, train it on last iteration's cell activity
+                if (self.active_cells[i] > 0):
                     self.cells[i].update_perms(self.last_active_cells,correct_prediction = True)
-                else:
-                    #If the cell is not active but was predictive, decrement its permanences
-                    if self.predictive_cells[i] > 0:
+                #If the cell is not active but was predictive, lower its permanences
+                elif self.predictive_cells[i] > 0:
                         self.cells[i].update_perms(correct_prediction = False)
         
         #Get the new predictive cells based on the new active cells
-        self.predictive_cells = self.find_predictive_cells()
+        self.find_predictive_cells();
+        
+        #Now update the cells that were below the predictive threshold but exceeded learning threshold
+        #on the current cell activity
+        if tm_learning and self.subthreshold_learning:
+            for i in range(self.num_cells*self.column_num):
+                if self.subthreshold_cells[i] > 0:
+                    #Note that we 'reward' the cells as if they had correctly predicted activity
+                    #even though they won't become active next cycle since they failed to exceed the 
+                    #prediction threshold (stimulus_thresh)
+                    self.cells[i].update_perms(self.active_cells,correct_prediction = True)
         
         if sparse_output:
             return sparse.csr_matrix(self.active_cells), sparse.csr_matrix(self.predictive_cells)
@@ -1142,3 +1268,20 @@ def plot_SDR(in_arr, axesObject = None):
 def overlap(sdr1, sdr2):
     #Returns the overlap score of two SDRs with matching shapes.
     return np.sum(sdr1*sdr2)
+
+def find_N_highest(arr,N):
+    #Finds the nth highest value in a 1D array.
+    #Should be faster than sorting if N << len(arr)
+    Nlist = []
+    for n in range(N):
+        val = -1
+        #Loop through the array
+        for x in arr:
+            #Find the largest value in the array that's not in Nlist
+            if x > val and x not in Nlist:
+                val = x
+        #Append the largest value found in this iteration to Nlist
+        Nlist.append(val)
+    #The resulting list is the N highest values in arr, sorted in descending order
+    return Nlist
+        
