@@ -27,7 +27,6 @@ import numpy as np
 import math
 import matplotlib.pyplot as plt
 import random as rand
-#from PyHTM_Connect_Branch import *
 from PyHTM import *
 
 def Basic_SP_Example():
