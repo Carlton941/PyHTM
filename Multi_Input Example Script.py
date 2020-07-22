@@ -27,7 +27,7 @@ to the *other* pooler.
 
 -Plot the translated output of the second pooler vs. the ideal output.
 """
-from PyHTM_Connect_Branch import *
+from PyHTM import *
 import random as rand
 import matplotlib.pyplot as plt
 
