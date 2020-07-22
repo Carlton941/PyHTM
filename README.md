@@ -1,7 +1,7 @@
 # PyHTM
  This is a Python 3 implementation of Hierarchical Temporal Memory (HTM). It's fairly sparse (pun intended) as of right now, but it's functional. I built it mainly as a way to learn how HTM works--learn by doing, right? I thought it might be helpful for other newcomers to HTM as well.
  
- For those of you who aren't familiar with HTM, it is a model of intelligence proposed by Jeff Hawkins, co-founder of the organization Numenta that does open-source research on HTM. The model, based on the biology of the brain's neocortex, proposes that intelligence emerges from systems that are able to perform generalized learning and make predictions based on that learning. The model assumes that most processing happening in the brain is the same basic algorithm, repeated over and over with cross-linked connections.
+ For those of you who aren't familiar with HTM, it is a model of intelligence proposed by Jeff Hawkins and Sanda Blakeslee. Jeff Hawkins became the co-founder of the organization Numenta, which now does open-source research on HTM. The model, based on the biology of the brain's neocortex, proposes that intelligence emerges from systems that are able to perform generalized learning and make predictions based on that learning. The model assumes that most processing happening in the brain is the same basic algorithm, repeated over and over with cross-linked connections.
  
  As I understand it, there are four basic components to HTM:
  
