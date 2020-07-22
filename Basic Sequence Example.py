@@ -28,14 +28,16 @@ import numpy as np
 import math
 import matplotlib.pyplot as plt
 import random as rand
-from PyHTM import *
+# from PyHTM import *
+from PyHTM_Connect_Branch import *
 
 
 #Define the encoder
 enc = ScalarEncoder(n=1000,w=40,minval=0,maxval=1)
 
 #Define the SP
-sp = SpatialPooler(input_dim=(enc.n,), boost_str=1)
+sp = SpatialPooler(source = enc, boost_str=1)
+# sp = SpatialPooler(input_dim = (enc.n,), boost_str=1)
 
 #Train the SP to recognize 4 different values
 A = enc.encode(0.1)

@@ -17,6 +17,11 @@ A discussion about the final figure:
     this is due to the way in which I calculate and normalize the scores and log-likelihoods,
     or if it is because of a flaw in the encodings--such as a poorly chosen resolution or sparsity.
     
+NOTE: Unlike the other programs, this one can take several hours to run, depending on the 
+num_cells argument. If you select 4 it will only take a few minutes, but the performance
+will not be as good due to the higher complexity of the HotGym data compared to the
+contrived signals used in the simpler examples.
+    
 """
 import datetime as dt
 import csv
@@ -53,7 +58,7 @@ def HotGym_SP_Example():
     perm_thresh = 0.1
     boost = 3
     
-    sp = SpatialPooler(input_dim=(enc.n,), column_num=column_num,
+    sp = SpatialPooler(source=enc, column_num=column_num,
                        max_active_cols=active_cols,
                        perm_increment=perm_inc,
                        perm_decrement=perm_dec,
@@ -62,9 +67,9 @@ def HotGym_SP_Example():
     start = time.time()
     #Train the pooler on the available data
     for index in range(num_records):
-        if index % 100 == 0 and index > 0:
+        if (index+1) % 100 == 0:
             end = time.time()
-            print("Pooled input {} out of 4390...".format(index))
+            print("Processed SP input {} out of 4390...".format(index+1))
             print("That took {} seconds.".format(end-start))
             start = time.time()
         sp.process_input(enc.encode([dates[index],power[index]]))
@@ -73,19 +78,18 @@ def HotGym_SP_Example():
     
 def HotGym_TM_Example(sp,enc,dates,power):
     #Trains a TM on the HotGym data; plots predictions and anomaly scores.
-    #This script can take quite a while to run (~1 hr).
+    #It performs better with more cells, but at 30 cells it takes all night to run
+    #the program.
     
     #Instantiate the temporal memory
     num_records = 4390
-    num_cells = 10
-    stimulus_thresh = 5     #Threshold to become predictive (and subsequently active)
-    # learning_thresh = 4     #Threshold to learn, even if not active
+    num_cells = 20
+    stimulus_thresh = 4     #Threshold to become predictive (and subsequently active)
     at = AnomalyTracker()
     tm = TemporalMemory(spatial_pooler=sp,
                         anomaly_tracker=at,
                         num_cells=num_cells,
                         stimulus_thresh=stimulus_thresh,
-                        min_learning_thresh=learning_thresh,
                         subthreshold_learning=False)
     
     #Train the temporal memory
@@ -94,8 +98,8 @@ def HotGym_TM_Example(sp,enc,dates,power):
     pred_SDRs = []
     start = time.time()
     for index in range(num_records):
-        if index % 100 == 0 and index > 0:
-            print("Memorized input {} out of 4390...".format(index))
+        if (index+1) % 100 == 0:
+            print("Processed TM input {} out of 4390...".format(index+1))
             end = time.time()
             print("That took took {} seconds.".format(end-start))
             start = time.time()
@@ -124,7 +128,7 @@ def HotGym_TM_Example(sp,enc,dates,power):
     
     #Plot the anomaly scores and log-likelihoods
     ax3.plot(at.scores,c='red',label='Scores')
-    ax3.plot(np.log(1+np.array(at.likelihoods)),c='green',label='Log-Likelihoods')
+    ax3.plot(at.likelihoods,c='green',label='Likelihoods')
     ax3.legend()
     ax3.set_title('Anomaly Readings')
     
