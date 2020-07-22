@@ -28,8 +28,7 @@ import numpy as np
 import math
 import matplotlib.pyplot as plt
 import random as rand
-# from PyHTM import *
-from PyHTM_Connect_Branch import *
+from PyHTM import *
 
 
 #Define the encoder
