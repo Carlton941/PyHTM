@@ -33,7 +33,7 @@ Python 3. The following objects are defined:
         to determine cell activity and prediction as well as learning updates.   
         
         
-This is a work-in-progress, so many advanced functionalities (such as RDSE) are not implemented yet.
+This is a work-in-progress, so many advanced functionalities are not implemented yet.
 
     
 """
@@ -44,6 +44,8 @@ import math
 import matplotlib.pyplot as plt
 import random as rand
 import warnings
+import time
+
 
 class ScalarEncoder():
     #This is a simple 1D scalar value encoder.
@@ -329,6 +331,98 @@ class DateEncoder():
             arr_list.append(self.weekend_enc.encode(weekend))
         
         return np.concatenate(arr_list)
+    
+class GloVeEncoder():
+    #This object encodes GloVe word-vectors as SDRs. GloVe reference: (https://nlp.stanford.edu/projects/glove/)
+    #You can use pickle to load the GloVeDict.txt dictionary file which contains
+    #400,000 word-vectors indexed to their associated word.
+    def __init__(self, d, b = 20, w = 40, ID = 'GE1'):
+        #Constructor method.
+        #filepath -> path to the file containing the GloVe word vectors.
+        #b -> Number of bits assigned to each vector dimension.
+        #Number of on-bits for the encoding.
+        
+        #Assign the basic variables
+        self.d = d
+        self.b = b
+        self.w = w
+        self.n = 2*b*d
+        self.ID = ID
+        self.output_dim = (self.n,)
+        
+    def encode(self, vector, weighting = 'abs'):
+        #Encodes a GloVe word-vector as an SDR.
+        #Each dimension is assigned 2*self.b bits, half for positive and half for negative.
+        #Then some of the bits for each dimension are turned on, according to the relative
+        #magnitude of the value in that position, until self.w bits have been activated.
+        
+        #Get the total weight of the vector by summing either the absolute values
+        #or the squares of the elements.
+        if weighting == 'abs':
+            total = np.sum(np.abs(vector))
+        elif weighting == 'squares':
+            total = np.sum(np.square(vector))
+        else:
+            print('Invalid weighting argument. Defaulting to abs.')
+            total = np.sum(np.abs(vector))
+            
+        num_active_bits = np.abs(np.round(40*vector/total)).astype('int')
+        
+        #Make sure there isn't a single zone with more than self.b active bits.
+        sorted_bits = np.argsort(num_active_bits)
+        overflow = 0
+        for index in range(self.d - 1, -1, -1):
+            bits = num_active_bits[sorted_bits[index]]
+            if bits > self.b:
+                #Increment the overflow, and scale back the active bits to self.b
+                overflow += bits - self.b
+                num_active_bits[sorted_bits[index]] = self.b
+            elif bits < self.b:
+                #Use up some of the overflow, and scale up the active bits
+                num_active_bits[sorted_bits[index]] += overflow
+                overflow -= min(self.b, bits + overflow) - bits
+        
+        #Make sure the rounding process didn't produce an incorrect bit total.
+        #We can accomplish this by scanning through all the zones with active bits,
+        #starting at the highest one, and adding/subtracting one bit to/from each.
+        increment_index = len(sorted_bits)
+        
+        #While the total number of active bits is less than w:
+        while np.sum(num_active_bits) != self.w:
+            increment_index -= 1
+            
+            #Start the cycle over again if the index passed 0
+            if increment_index < 0:
+                increment_index = len(sorted_bits) - 1
+                
+            #Skip this index if the maximum bits are already contained here.
+            if num_active_bits[sorted_bits[increment_index]] == self.b:
+                continue
+            
+            #Update the bit counter for this index
+            num_active_bits[sorted_bits[increment_index]] += np.sign(self.w-np.sum(num_active_bits))        
+                        
+        #Now we'll define the output SDR and fill in the active bits for each zone.
+        SDR = np.zeros(self.n,)
+        for index, bits in enumerate(num_active_bits):
+            if bits > self.b:
+                print("Error! Bits = {}".format(bits))
+            if vector[index] < 0:
+                #Activate the bits at index*(2*b)
+                start = index*2*self.b
+                end = index*2*self.b + bits
+                SDR[start:end] = 1
+                                
+            else:
+                #Activate the bits at index*(2*b) + b
+                start = (1 + index*2)*self.b
+                end = (1 + index*2)*self.b + bits
+                SDR[start:end] = 1          
+                
+        if np.sum(SDR) != self.w:
+            print("Error compiling SDR: Total active bits = {} and not {}.".format(np.sum(SDR)),self.w)
+                
+        return SDR
     
 class MultiEncoder():
     #This object is used to conveniently combine any number of different encoder objects
@@ -1122,7 +1216,7 @@ class TemporalMemory():
                 
         return self.predictive_cells
     
-    def process_input(self, SDR, tm_learning = True, sp_learning = False, new_sp_cycle = False, all_cells_allowed = True, num_allowed = -1, multi_inputs = False, boosting = False, static_sp = True, sparse_output = False):
+    def process_input(self, SDR, tm_learning = True, sp_learning = False, new_sp_cycle = False, all_cells_allowed = True, num_allowed = -1, multi_inputs = False, boosting = False, static_sp = True, sparse_output = False):        
         #Reads in an SDR, allows the SP to process it, determines which Cells
         #become active and predictive, then performs all of the learning updates.
         #Returns SDRs of the active and predictive cells as a tuple.
@@ -1151,7 +1245,9 @@ class TemporalMemory():
                         self.cells[i].update_perms(correct_prediction = False)
         
         #Get the new predictive cells based on the new active cells
+        start_time = time.time()
         self.find_predictive_cells();
+        self.pred_time += (time.time() - start_time)
         
         #Now update the cells that were below the predictive threshold but exceeded learning threshold
         #on the current cell activity
