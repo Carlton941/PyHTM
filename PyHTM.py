@@ -46,7 +46,6 @@ import random as rand
 import warnings
 import time
 
-
 class ScalarEncoder():
     #This is a simple 1D scalar value encoder.
     
@@ -339,7 +338,8 @@ class GloVeEncoder():
     def __init__(self, d, b = 20, w = 40, ID = 'GE1'):
         #Constructor method.
         #filepath -> path to the file containing the GloVe word vectors.
-        #b -> Number of bits assigned to each vector dimension.
+        #b -> Half of the number of bits assigned to each vector dimension.
+            #Each half corresponds to -/+ values , respectively.
         #Number of on-bits for the encoding.
         
         #Assign the basic variables
@@ -350,24 +350,62 @@ class GloVeEncoder():
         self.ID = ID
         self.output_dim = (self.n,)
         
-    def encode(self, vector, weighting = 'abs'):
-        #Encodes a GloVe word-vector as an SDR.
+    def test_similarity(self, key1, key2, dictionary, weighting = 'exp', beta = 3):
+        #Tests the % similarity of two encodings corresponding to two words.
+        sdr1 = self.encode(key1, dictionary, weighting=weighting, beta=beta)
+        sdr2 = self.encode(key2, dictionary, weighting=weighting, beta=beta)
+        #Normalize by the sum of the second sdr, and multiply by 100 to transform to %.
+        return round(100/np.sum(sdr2)*overlap(sdr1,sdr2),1)
+    
+    def encode_difference(self, key1, key2, dictionary, weighting = 'exp', beta = 3, enforce_w = False):
+        #Encodes the vector difference between two word normalized word vectors.
+        
+        #Get the word vectors
+        vec1 = np.array(dictionary[key1])
+        vec2 = np.array(dictionary[key2])
+        
+        #Normalize the vectors
+        # vec1 /= np.linalg.norm(vec1)
+        # vec2 /= np.linalg.norm(vec2)
+        
+        #Call the encode() method
+        return self.encode(dictionary=dictionary, vector=vec2-vec1, weighting=weighting, beta=beta,enforce_w=enforce_w)
+        
+    def encode(self,  dictionary, key = None, vector = None, weighting = 'exp', enforce_w = False, beta = 3):
+        #Encodes a GloVe word-vector as an SDR. Can either take the vector or the dictionary and key.
         #Each dimension is assigned 2*self.b bits, half for positive and half for negative.
         #Then some of the bits for each dimension are turned on, according to the relative
         #magnitude of the value in that position, until self.w bits have been activated.
         
+        #Take the input as a numpy array
+        if vector is None:
+            vector = np.array(dictionary[key]).reshape((-1,))
+        elif type(vector) is not np.ndarray:
+            vector = np.array(vector)
+            
+        #Normalize the vector
+        # vector = vector / np.linalg.norm(vector)
+            
+        
         #Get the total weight of the vector by summing either the absolute values
         #or the squares of the elements.
         if weighting == 'abs':
-            total = np.sum(np.abs(vector))
+            weights = np.abs(vector)
+            total = np.sum(weights)
         elif weighting == 'squares':
-            total = np.sum(np.square(vector))
+            weights = np.square(vector)
+            total = 1
+        elif weighting == 'exp':
+            weights = np.abs(vector)**beta
+            total = np.sum(weights)
         else:
-            print('Invalid weighting argument. Defaulting to abs.')
-            total = np.sum(np.abs(vector))
+            print('Invalid weighting argument. Defaulting to squares.')
+            weights = np.square(vector)
+            total = 1
             
-        num_active_bits = np.abs(np.round(40*vector/total)).astype('int')
-        
+        #Set the number of active bits for each zone by multipling the weight by w/total.
+        num_active_bits = np.round(self.w/total*weights).astype('int')
+                    
         #Make sure there isn't a single zone with more than self.b active bits.
         sorted_bits = np.argsort(num_active_bits)
         overflow = 0
@@ -385,28 +423,29 @@ class GloVeEncoder():
         #Make sure the rounding process didn't produce an incorrect bit total.
         #We can accomplish this by scanning through all the zones with active bits,
         #starting at the highest one, and adding/subtracting one bit to/from each.
-        increment_index = len(sorted_bits)
+        if enforce_w:
+            increment_index = len(sorted_bits)
         
-        #While the total number of active bits is less than w:
-        while np.sum(num_active_bits) != self.w:
-            increment_index -= 1
-            
-            #Start the cycle over again if the index passed 0
-            if increment_index < 0:
-                increment_index = len(sorted_bits) - 1
+            #While the total number of active bits is less than w:
+            while np.sum(num_active_bits) != self.w:
+                increment_index -= 1
                 
-            #Skip this index if the maximum bits are already contained here.
-            if num_active_bits[sorted_bits[increment_index]] == self.b:
-                continue
-            
-            #Update the bit counter for this index
-            num_active_bits[sorted_bits[increment_index]] += np.sign(self.w-np.sum(num_active_bits))        
+                #Start the cycle over again if the index passed 0
+                if increment_index < 0:
+                    increment_index = len(sorted_bits) - 1
+                    
+                #Skip this index if the maximum bits are already contained here.
+                if num_active_bits[sorted_bits[increment_index]] == self.b:
+                    continue
+                
+                #Update the bit counter for this index
+                num_active_bits[sorted_bits[increment_index]] += np.sign(self.w-np.sum(num_active_bits))        
                         
         #Now we'll define the output SDR and fill in the active bits for each zone.
         SDR = np.zeros(self.n,)
         for index, bits in enumerate(num_active_bits):
             if bits > self.b:
-                print("Error! Bits = {}".format(bits))
+                print("Error! Bits = {} > {}".format(bits,self.b))
             if vector[index] < 0:
                 #Activate the bits at index*(2*b)
                 start = index*2*self.b
@@ -419,8 +458,8 @@ class GloVeEncoder():
                 end = (1 + index*2)*self.b + bits
                 SDR[start:end] = 1          
                 
-        if np.sum(SDR) != self.w:
-            print("Error compiling SDR: Total active bits = {} and not {}.".format(np.sum(SDR)),self.w)
+        # if np.sum(SDR) != self.w:
+        #     print("Error compiling SDR: Total active bits = {} and not {}.".format(np.sum(SDR),self.w))
                 
         return SDR
     
@@ -445,6 +484,25 @@ class MultiEncoder():
         if len(inputs) != len(self.encoders):
             raise ValueError('Number of inputs does not match number of encoders!')
         return np.concatenate([self.encoders[i].encode(inputs[i]) for i in range(len(inputs))])            
+       
+class ImageBinarizer():
+    #Binarizes greyscale images and returns them as rank 1 arrays.
+    def __init__(self, sample_input, ID = 'IB1'):
+        #Constructor method.
+        #sample_input -> Used to determine the output shape
+        #ID - > Identifier for this object. Should be unique for each instance.
+        self.ID = ID
+        self.output_dim = sample_input.reshape(-1,).shape
+        
+    def encode(self, img, thresh = 100):
+        #Normalizes and binarizes the image.
+        reshaped_img = img.reshape(-1,)
+        out = np.zeros(reshaped_img.shape)
+        
+        #Place a 1 in "out" wherever the pixels in "reshaped_img" exceed the threshold.
+        out[reshaped_img >= thresh] = 1
+
+        return out        
        
 class miniColumn():
     #This object maintains a list of permanence arrays and connection arrays.
@@ -1088,10 +1146,11 @@ class TemporalMemory():
         #Record the anomaly tracker, if any
         self.anomaly_tracker = anomaly_tracker
 
-    def get_active_columns(self, SDR, multi_inputs = False, static_sp = True, sp_learning = False, boosting = False, new_cycle = False):
+    def get_active_columns(self, SDR, multi_inputs = False, static_sp = True, sp_learning = False, boosting = False, new_cycle = False, input_source_num = 0, input_ID = None):
         #Takes an SDR input and calls the spatial pooler to determine which columns become active.
         #This method does not let the SP use boosting or make learning updates.
-
+        if input_ID is not None:
+            input_source_num = self.spatial_pooler.ID_dict[input_ID]
         #If we just want the SP output without any updates, boosting, etc:
         if static_sp:
             #If the SP has multiple inputs and they're all included:
@@ -1102,7 +1161,7 @@ class TemporalMemory():
                 return self.spatial_pooler.get_active_columns(overlaps)
             #If we're just passing in one input:
             else:
-                return self.spatial_pooler.get_active_columns(self.spatial_pooler.compute_overlap_par(SDR))
+                return self.spatial_pooler.get_active_columns(self.spatial_pooler.compute_overlap_par(SDR, input_source_num = input_source_num))
         #If we want the SP to process the input and include some updates, boosting, etc:
         else:
             #If the SP has multiple inputs and they're all included:
@@ -1110,7 +1169,7 @@ class TemporalMemory():
                 return self.spatial_pooler.process_multiple_inputs(SDR,sp_learning,boosting,new_cycle=new_cycle)
             #If we're just passing in one input:
             else:
-                return self.spatial_pooler.process_input(SDR,sp_learning,boosting,new_cycle=new_cycle)
+                return self.spatial_pooler.process_input(SDR,sp_learning,boosting,new_cycle=new_cycle, input_source_num = input_source_num)
         
     def find_active_cells(self, learning = False):
         #Takes in a list of active columns and updates the active cells.
@@ -1216,7 +1275,7 @@ class TemporalMemory():
                 
         return self.predictive_cells
     
-    def process_input(self, SDR, tm_learning = True, sp_learning = False, new_sp_cycle = False, all_cells_allowed = True, num_allowed = -1, multi_inputs = False, boosting = False, static_sp = True, sparse_output = False):        
+    def process_input(self, SDR, tm_learning = True, sp_learning = False, new_sp_cycle = False, all_cells_allowed = True, num_allowed = -1, multi_inputs = False, boosting = False, static_sp = True, sparse_output = False, input_source_num = 0):        
         #Reads in an SDR, allows the SP to process it, determines which Cells
         #become active and predictive, then performs all of the learning updates.
         #Returns SDRs of the active and predictive cells as a tuple.
@@ -1245,9 +1304,9 @@ class TemporalMemory():
                         self.cells[i].update_perms(correct_prediction = False)
         
         #Get the new predictive cells based on the new active cells
-        start_time = time.time()
+        # start_time = time.time()
         self.find_predictive_cells();
-        self.pred_time += (time.time() - start_time)
+        # self.pred_time += (time.time() - start_time)
         
         #Now update the cells that were below the predictive threshold but exceeded learning threshold
         #on the current cell activity
@@ -1321,38 +1380,37 @@ class Regressor():
         #report_score -> Whether or not to report the training score.
         #*args, **kwargs -> Extra arguments passed to the regressor constructor.
         
-        #Reshape the inputs.
-        SDRs = [np.array(SDR).reshape(-1,) for SDR in SDR_list]
+        #Make a regressor object
         if regressor_type == 'KNN':
             from sklearn.neighbors import KNeighborsRegressor as KNN
             #Instantiate and fit the regressor
-            self.reg = KNN(*args, **kwargs).fit(SDRs,value_list)
+            self.reg = KNN(*args, **kwargs).fit(SDR_list,value_list)
         elif regressor_type == 'SVM':
             from sklearn.svm import SVR
             #Instantiate and fit the regressor
-            self.reg = SVR(*args, **kwargs).fit(SDRs,value_list)
+            self.reg = SVR(*args, **kwargs).fit(SDR_list,value_list)
         elif regressor_type == 'linear':
             from sklearn.linear_model import LinearRegression as LR
             #Instantiate and fit the regressor
-            self.reg = LR(*args, **kwargs).fit(SDRs,value_list)
+            self.reg = LR(*args, **kwargs).fit(SDR_list,value_list)
         elif regressor_type == 'tree':
             from sklearn.tree import DecisionTreeRegressor as DTR
             #Instantiate and fit the regressor
-            self.reg = DTR(*args,**kwargs).fit(SDRs,value_list)
+            self.reg = DTR(*args,**kwargs).fit(SDR_list,value_list)
         elif regressor_type == 'forest':
             from sklearn.ensemble import RandomForestRegressor as RFR
             #Instantiate and fit the regressor
-            self.reg = RFR(*args,**kwargs).fit(SDRs,value_list)
+            self.reg = RFR(*args,**kwargs).fit(SDR_list,value_list)
         else:
             print('Input "regressor_type" not set to a valid value! Defaulting to KNN...')
             from sklearn.neighbors import KNeighborsRegressor as KNN
             #Instantiate and fit the regressor
-            self.reg = KNN(*args, **kwargs).fit(SDRs,value_list)
+            self.reg = KNN(*args, **kwargs).fit(SDR_list,value_list)
         
         #Record and report the score of the regressor.
         self.score = -1
         if report_score:
-            self.score = self.reg.score(SDRs,value_list)
+            self.score = self.reg.score(SDR_list,value_list)
             print("R2 score on training SDRs: " + str(self.score))
             
     def translate(self,x):
@@ -1364,7 +1422,86 @@ class Regressor():
         #Otherwise, assume it is a single SDR.
         else:
             return self.reg.predict(np.array(x).reshape(1,-1))[0]
-                    
+             
+class Classifier():
+    #This object contains an SKlearn classifierand learns to translate from
+    #SDRs to classes.
+    def __init__(self, SDR_list, class_list, classifier_type = 'KNN', report_score = True, *args, **kwargs):
+        #Constructor method.
+        #SDR_list -> a list of rank 1 array SDRs
+        #class_list -> the corresponding class labels to learn.
+        #classifier_type -> a string identifying the type of SKlearn classifier to use
+        #report_score -> Whether or not to report the training accuracy.
+        #*arts, **kwargs -> extra arguments to pass to the classifier constructor.
+        
+        #Make a classifier object
+        if classifier_type == 'KNN':
+            from sklearn.neighbors import KNeighborsClassifier as KNN
+            self.classifier = KNN(*args,**kwargs).fit(SDR_list,class_list)
+        elif classifier_type == 'SVM':
+            from sklearn.svm import SVC
+            self.classifier = SVC(*args,**kwargs).fit(SDR_list,class_list)
+        elif classifier_type == 'tree':
+            from sklearn.tree import DecisionTreeClassifier as DTC
+            self.classifier = DTC(*args,**kwargs).fit(SDR_list,class_list)
+        elif classifier_type == 'forest':
+            from sklearn.ensemble import RandomForestClassifier as RFC
+            self.classifier = RFC(*args,**kwargs).fit(SDR_list,class_list)
+        else:
+            print("Argument 'classifier_type' not a valid value. Defaulting to KNN.")
+            from sklearn.neighbors import KNeighborsClassifier as KNN
+            self.classifier = KNN(*args,**kwargs).fit(SDR_list,class_list)
+            
+        #Record and report the score.
+        self.score = -1
+        if report_score:
+            self.score = self.classifier.score(SDR_list, class_list)
+            print("Accuracy on training SDRs: {}".format(self.score))
+            
+    def translate(self, x):
+        #Takes a single SDR or a list of SDRs and translates them to classes.
+        
+        if type(x) == list:
+            #Assume it's a list of SDRs.
+            return [self.classifier.predict(sdr) for sdr in x]
+        else:
+            #Assume it's a single SDR.
+            return self.classifier.predict(x)
+            
+class Reconstructor():
+    #This object reconstructs an original input that isn't simply a single
+    #value or class by comparing a given SDR against a list of references
+    #and uses the KNN-averaging method to guess at a reconstruction.
+    def __init__(self, SDR_list, values_list):
+        #Constructor method.
+        #SDR_list -> List of SDRs corresponding to values.
+        #values_list -> List of values--may be images, etc.
+        self.SDR_list = SDR_list
+        self.values_list = values_list
+        
+    def translate(self, SDR, n_neighbors = 5):
+        #Translates an SDR into a value by comparing to references.
+        
+        #If the input is a list of SDRs:
+        if type(SDR) == list:
+            return [self.translate(x,n_neighbors=n_neighbors) for x in SDR]
+        #Otherwise, if it's just a single SDR:
+        else:
+            #Get the overlap scores
+            scores = [overlap(SDR, reference) for reference in self.SDR_list]
+            
+            #Find the top few overlaps
+            sorted_indices = np.argsort(scores)
+            top_score_indices = sorted_indices[-n_neighbors:]
+            
+            #Return the average of the top few corresponding values
+            out = np.zeros(self.values_list[0].shape)
+            for index in top_score_indices:
+                out += self.values_list[index]
+            out /= n_neighbors
+        
+        return out
+            
 def transform_2D(arr):
     #Convenience function used to transform a 1D SDR into 2D for visualization purposes.
     
