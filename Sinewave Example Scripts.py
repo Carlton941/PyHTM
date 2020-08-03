@@ -59,8 +59,8 @@ def Basic_SP_Example():
     perm_inc = 0.5          #Permanence learning increment size.
     perm_dec = 0.008        #Choose a much smaller decrement rate in this case.
     #Go with the default for the other options.
-    #sp = SpatialPooler(source=enc, column_num = col_num,
-    sp = SpatialPooler(input_dim = (enc.n,),
+    # sp = SpatialPooler(input_dim = (enc.n,),
+    sp = SpatialPooler(source=enc, column_num = col_num,
                        max_active_cols=col_active_num,
                        potential_percent=potential_conn,
                        perm_increment=perm_inc,
@@ -68,8 +68,7 @@ def Basic_SP_Example():
     
     #The minicolumns initially have random connections. These will become more organized when the 
     #pooler is trained.
-    #plot_SDR(sp.columns[0].actual_connections[0], ax2)
-    plot_SDR(sp.columns[0].actual_connections, ax2)
+    plot_SDR(sp.columns[0].actual_connections[0], ax2)
     ax2.set_title('Untrained Connections')
     
     #To train the spatial pooler, I need to randomly generate many input values and encode them.
@@ -87,7 +86,7 @@ def Basic_SP_Example():
     #Not all of the columns have been particularly active, so for this demonstration we'll
     #select one that has been active to see what its connection space has become.
     #plot_SDR(sp.columns[np.argmin(sp.boost_factors)].actual_connections[0], ax3)
-    plot_SDR(sp.columns[np.argmin(sp.boost_factors)].actual_connections, ax3)
+    plot_SDR(sp.columns[np.argmin(sp.boost_factors)].actual_connections[0], ax3)
     ax3.set_title('Trained Connections')
     
     #The connections now look much less random, as the minicolumn has become associated
@@ -121,7 +120,7 @@ def Basic_TM_Example(sp,enc, generate_data = False, add_anomalies = True, N = 40
     
     #I get better results with a large # of cells like 30 instead of 4,
     #but it also takes far longer to run (~hours instead of ~minutes)
-    num_cells = 30  #The more temporally complex the signal, the more cells you need
+    num_cells = 4  #The more temporally complex the signal, the more cells you need
     threshold = 4   #The predictive overlap threshold
     at = AnomalyTracker()   #Initialize a default anomaly tracker
     #Leave the other parameters as their default settings
@@ -212,6 +211,9 @@ def Forecast(tm,enc,x,N,pred,predreg):
     #and feeds them into the TM again.
     #In so doing, it generates a sequence that reveals the TM's idea of what
     #the future signal will look like more than just one time-step forward.
+    #Note that this is pretty finicky, and usually only works with a large
+    #number of cells. If there are too few it will just get stuck producing
+    #the same value repeatedly.
     preds = []
     predvals = []
     val = predreg.translate(pred)
