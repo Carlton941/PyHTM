@@ -203,7 +203,7 @@ def Test3(sp):
     
     #Train the TM on the sequences, showing both inputs
     at = AnomalyTracker()
-    tm = TemporalMemory(spatial_pooler = sp, anomaly_tracker = at, num_cells=4, stimulus_thresh=4)
+    tm = TemporalMemory(spatial_pooler = sp, anomaly_tracker = at, num_cells=6, stimulus_thresh=4)
     
     #Store all the data in case we want to use it
     sequences = []
@@ -216,6 +216,9 @@ def Test3(sp):
     training_actives = []
     
     for iter in range(200):
+        if (iter + 1) % 50 == 0:
+            print("Finished {} out of 200 iterations...".format(iter + 1))
+        
         #Reset the tm.
         tm.reset()
         
