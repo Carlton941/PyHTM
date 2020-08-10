@@ -26,12 +26,14 @@ contrived signals used in the simpler examples.
 import datetime as dt
 import csv
 from PyHTM import *
+# from PyHTM_TP_Branch import *
 import time
 
 def HotGym_SP_Example():
 #Trains an SP on the HotGym data.
         
     #Read the data
+    # num_records = 4390
     num_records = 4390
     file_path = 'one_hot_gym_data.csv'
     with open(file_path, 'r') as f:
@@ -67,10 +69,10 @@ def HotGym_SP_Example():
     start = time.time()
     #Train the pooler on the available data
     for index in range(num_records):
-        if (index+1) % 100 == 0:
+        if (index+1) % 500 == 0:
             end = time.time()
             print("Processed SP input {} out of 4390...".format(index+1))
-            print("That took {} seconds.".format(end-start))
+            print("That took {} seconds.".format(round(end-start,1)))
             start = time.time()
         sp.process_input(enc.encode([dates[index],power[index]]))
     
@@ -78,12 +80,16 @@ def HotGym_SP_Example():
     
 def HotGym_TM_Example(sp,enc,dates,power):
     #Trains a TM on the HotGym data; plots predictions and anomaly scores.
-    #It performs better with more cells, but at 30 cells it takes all night to run
-    #the program.
+    #It performs better with more cells, but the runtime rises exponentially.
+    #For instance, at 4 cells it takes about 5 minutes but at 30 cells it takes 
+    #all night to run the program.
+    
+    #Timer test
+    overall_runtime_start = time.time()
     
     #Instantiate the temporal memory
     num_records = 4390
-    num_cells = 20
+    num_cells = 4
     stimulus_thresh = 4     #Threshold to become predictive (and subsequently active)
     at = AnomalyTracker()
     tm = TemporalMemory(spatial_pooler=sp,
@@ -93,7 +99,6 @@ def HotGym_TM_Example(sp,enc,dates,power):
                         subthreshold_learning=False)
     
     #Train the temporal memory
-    #You may see a RuntimeWarning about divide by 0--it won't cause any issues.
     active_SDRs = []
     pred_SDRs = []
     start = time.time()
@@ -101,16 +106,24 @@ def HotGym_TM_Example(sp,enc,dates,power):
         if (index+1) % 100 == 0:
             print("Processed TM input {} out of 4390...".format(index+1))
             end = time.time()
-            print("That took took {} seconds.".format(end-start))
+            print("That took took {} seconds.".format(round(end-start,1)))
             start = time.time()
-        act, pred = tm.process_input(enc.encode([dates[index],power[index]]),sparse_output=False)
+        act, pred = tm.process_input(enc.encode([dates[index],power[index]]))
         active_SDRs.append(act)
         pred_SDRs.append(pred)
+
+        
+    overall_runtime_end = time.time()
+    overall_runtime = overall_runtime_end - overall_runtime_start
+    print("Overall runtime is {} seconds.".format(overall_runtime))
+    print("Training regressor...")
+    # print("Of that, {} seconds was just the find_predictive_cells() method.".format(tm.pred_time))
         
     #Train a translator for the power readings
     reg = Regressor(active_SDRs,power)
     
     #Translate the predicted power readings
+    print("Translating prediction SDRs...")
     pred_translations = reg.translate(pred_SDRs)
         
     #Make some visualizations

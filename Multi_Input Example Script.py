@@ -75,7 +75,9 @@ for i in range(3000):
 ### Train regressors
 
 #Only use the last 1000 inputs, after the SPs have settled down.
+print("Training regressor on SP1...")
 reg1 = Regressor(sp1_training_outputs[-1000:],data[-1000:])
+print("Training regressor on SP2...")
 reg2 = Regressor(sp2_training_outputs[-1000:],np.sin(data[-1000:]))
 
 ### Run another dataset for testing

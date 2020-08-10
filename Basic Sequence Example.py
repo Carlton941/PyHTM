@@ -29,7 +29,7 @@ import math
 import matplotlib.pyplot as plt
 import random as rand
 from PyHTM import *
-
+# from PyHTM_TP_Branch import *
 
 #Define the encoder
 enc = ScalarEncoder(n=1000,w=40,minval=0,maxval=1)

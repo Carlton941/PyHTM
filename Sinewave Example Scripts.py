@@ -27,6 +27,7 @@ import numpy as np
 import math
 import matplotlib.pyplot as plt
 import random as rand
+# from PyHTM_TP_Branch import *
 from PyHTM import *
 
 def Basic_SP_Example():
@@ -59,7 +60,6 @@ def Basic_SP_Example():
     perm_inc = 0.5          #Permanence learning increment size.
     perm_dec = 0.008        #Choose a much smaller decrement rate in this case.
     #Go with the default for the other options.
-    # sp = SpatialPooler(input_dim = (enc.n,),
     sp = SpatialPooler(source=enc, column_num = col_num,
                        max_active_cols=col_active_num,
                        potential_percent=potential_conn,
@@ -85,7 +85,6 @@ def Basic_SP_Example():
     #Now that the minicolumns have been trained, let's take another look at the connections.
     #Not all of the columns have been particularly active, so for this demonstration we'll
     #select one that has been active to see what its connection space has become.
-    #plot_SDR(sp.columns[np.argmin(sp.boost_factors)].actual_connections[0], ax3)
     plot_SDR(sp.columns[np.argmin(sp.boost_factors)].actual_connections[0], ax3)
     ax3.set_title('Trained Connections')
     
@@ -104,6 +103,7 @@ def Basic_SP_Example():
     
     #Instantiate the regressor. It will automatically learn the data. 
     #The default regressor type is sklearn's KNeighborsRegressor.
+    print("Training regressor on SP output...")
     reg = Regressor(sp_random_outputs,random_vals)
     translations = reg.translate(sp_x)
     
@@ -119,8 +119,8 @@ def Basic_TM_Example(sp,enc, generate_data = False, add_anomalies = True, N = 40
     #With the Spatial Pooler trained, let's create a temporal memory.    
     
     #I get better results with a large # of cells like 30 instead of 4,
-    #but it also takes far longer to run (~hours instead of ~minutes)
-    num_cells = 4  #The more temporally complex the signal, the more cells you need
+    #but it also takes much longer to run.
+    num_cells = 30  #The more temporally complex the signal, the more cells you need
     threshold = 4   #The predictive overlap threshold
     at = AnomalyTracker()   #Initialize a default anomaly tracker
     #Leave the other parameters as their default settings
@@ -165,7 +165,9 @@ def Basic_TM_Example(sp,enc, generate_data = False, add_anomalies = True, N = 40
         preds.append(pred)
         
     #Let's use the active cell outputs to learn the translation.
+    print("Training regressor on active cell data...")
     actreg = Regressor(actives[period:N],x[period:N])
+    print("Training regressor on predictive cell data...")
     predreg = Regressor(preds[period:N-1],x[period+1:N])
     
     #We can also attempt to generate the signal based purely on the TM's own predictions.
@@ -211,9 +213,6 @@ def Forecast(tm,enc,x,N,pred,predreg):
     #and feeds them into the TM again.
     #In so doing, it generates a sequence that reveals the TM's idea of what
     #the future signal will look like more than just one time-step forward.
-    #Note that this is pretty finicky, and usually only works with a large
-    #number of cells. If there are too few it will just get stuck producing
-    #the same value repeatedly.
     preds = []
     predvals = []
     val = predreg.translate(pred)
